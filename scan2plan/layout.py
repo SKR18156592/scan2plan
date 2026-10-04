@@ -54,8 +54,9 @@ class Frame2D:
 def build_grids(pts, w, floor_y, ceil_y, cam_uv, frame=None):
     """Occupancy grids in the (u, v) frame.
 
-    wall: cells whose points span >= 1 m vertically inside the wall band.
-          Tall vertical extent separates walls from tables/sofas/beds.
+    tall: cells with >= 1 m of vertical point coverage inside the wall band.
+          Tall extent separates walls from tables/sofas/beds.
+    wall: tall, or >= 0.5 m coverage in a long axis-aligned run.
     floor: cells with points on the floor plane (observed walkable area).
     """
     h = pts[:, 1] - floor_y
@@ -75,18 +76,20 @@ def build_grids(pts, w, floor_y, ceil_y, cam_uv, frame=None):
     ok = (cc[:, 0] >= 0) & (cc[:, 0] < cols) & (cc[:, 1] >= 0) & (cc[:, 1] < rows)
     idx = cc[:, 1] * cols + cc[:, 0]
 
-    inband = ok & (h > 0.1) & (h < top)
-    hmin = np.full(rows * cols, np.inf)
-    hmax = np.full(rows * cols, -np.inf)
-    np.minimum.at(hmin, idx[inband], h[inband])
-    np.maximum.at(hmax, idx[inband], h[inband])
-    span = (hmax - hmin).reshape(rows, cols)
-    # Tall surfaces are walls. Shorter ones are walls only when they form a
-    # long axis-aligned run (a floor-pointed scan sees only the lower wall);
-    # furniture is short and compact, so it fails both tests.
-    tall = span >= 1.0
+    # Vertical coverage per cell: how many 10 cm height slices hold points.
+    # A min/max span is fooled by "flying pixels" (LiDAR returns smeared
+    # across depth edges) that pile up in mid-air over repeated passes; a
+    # real wall fills consecutive slices. Voxels seen only once are ignored.
+    inband = ok & (h > 0.1) & (h < top) & (w >= 2)
+    nsl = int(np.ceil(top / 0.1)) + 1
+    sl = np.clip((h[inband] / 0.1).astype(int), 0, nsl - 1)
+    occ = np.zeros(rows * cols * nsl, bool)
+    occ[idx[inband] * nsl + sl] = True
+    cover = occ.reshape(rows, cols, nsl).sum(2) * 0.1
+    span = cover
+    tall = cover >= 1.0
     run = int(round(0.6 / CELL))
-    cand = span >= 0.5
+    cand = cover >= 0.5
     straight = (ndi.binary_opening(cand, structure=np.ones((1, run)))
                 | ndi.binary_opening(cand, structure=np.ones((run, 1))))
     # `tall` is the structural wall map used for room separation; `wall`
@@ -99,7 +102,7 @@ def build_grids(pts, w, floor_y, ceil_y, cam_uv, frame=None):
     floor = floor.reshape(rows, cols)
 
     # Anything with points in the band at all (furniture included).
-    occupied = np.isfinite(span) & ~wall
+    occupied = (cover > 0) & ~wall
 
     walk = np.zeros((rows, cols), bool)
     cc_cam = frame.to_cell(cam_uv)

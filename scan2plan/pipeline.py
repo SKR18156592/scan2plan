@@ -35,21 +35,33 @@ def _room_at(rooms, frame, uv):
     return 0
 
 
-def run(capture_dir, out_dir, poses=None, step=3, tag=None, cloud_cache=None):
+def run(capture_dir, out_dir, drift_correction=True, step=3, cache_dir="out/cache"):
+    """Process one capture. Caches (keyed by capture name and drift mode) make
+    re-runs fast; delete the cache dir or pass cache_dir=None for a cold run."""
     t0 = time.time()
     timing = {}
     cap = load_capture(capture_dir)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    mode = "drift_on" if drift_correction else "drift_off"
+    cache = Path(cache_dir) / f"{cap.root.name}_{mode}_s{step}.npz" if cache_dir else None
 
-    if cloud_cache and Path(cloud_cache).exists() and poses is None:
-        d = np.load(cloud_cache)
-        pts, w = d["pts"], d["w"]
+    if cache and cache.exists():
+        d = np.load(cache, allow_pickle=True)
+        pts, w, P = d["pts"], d["w"], d["poses"]
+        tag = d["tag"].item()
+        timing["cache_hit"] = 1.0
     else:
-        pts, w = fuse(cap, poses=poses, step=step)
-        if cloud_cache and poses is None:
-            np.savez_compressed(cloud_cache, pts=pts, w=w)
-    P = cap.poses if poses is None else poses
+        P, tag = cap.poses, dict(enabled=False, note="ablation: raw ARKit poses")
+        if drift_correction:
+            from .drift import correct
+            P, tag = correct(cap)
+            tag["enabled"] = True
+            timing["drift_s"] = time.time() - t0
+        pts, w = fuse(cap, poses=P, step=step)
+        if cache:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            np.savez_compressed(cache, pts=pts, w=w, poses=P, tag=np.array(tag, dtype=object))
     timing["fuse_s"] = time.time() - t0
 
     t = time.time()
@@ -131,8 +143,9 @@ def run(capture_dir, out_dir, poses=None, step=3, tag=None, cloud_cache=None):
         interval="95% (value ± 1.96 sigma)",
         plan_frame=dict(rotation_deg=round(float(np.rad2deg(frame.angle)), 3),
                         note="plan (u, v) = world (x, z) rotated so dominant walls are axis-aligned"),
-        drift_correction=tag or "none",
+        drift_correction=tag,
         floor=dict(plane_residual_std=round(floor["std"], 4)),
+        quality=dict(wall_surface_spread_median=round(float(np.median([w["surface_spread"] for r in rooms for w in r["walls"] if w["observed"]])), 4)),
         rooms=out_rooms,
         adjacency=adj,
         property=dict(room_count=len(rooms), footprint=_measure(footprint, footprint_sigma)),
@@ -144,5 +157,5 @@ def run(capture_dir, out_dir, poses=None, step=3, tag=None, cloud_cache=None):
     result["timing_s"]["total_s"] = round(time.time() - t0, 2)
     with open(out_dir / "plan.json", "w") as f:
         json.dump(result, f, indent=2)
-    render_plan(result, out_dir / "plan.png", title=f"{result['capture']} - LiDAR tier, drift: {result['drift_correction']}")
+    render_plan(result, out_dir / "plan.png", title=f"{result['capture']} - LiDAR tier, drift correction {'on' if drift_correction else 'off'}")
     return result

@@ -263,7 +263,7 @@ def measure_room(rid, mask, frame, pts, floor_fit, ceil_fit, wall_mask_uv, floor
         var_area += (L * sig[k]) ** 2
         ops = find_openings(P, k, info, uv_all[near], h[near], floor_obs, frame, ceiling["value"] if ceiling else None)
         walls.append(dict(id=f"r{rid}_w{k}", start=a.tolist(), end=b.tolist(), length=L, length_sigma=s_len,
-                          observed=info["observed"], surface_sigma=sig[k], openings=ops))
+                          observed=info["observed"], surface_sigma=sig[k], surface_spread=info["std"], openings=ops))
     s_area = float(np.sqrt(var_area + (errors.SCALE_SIGMA * 2 * area) ** 2))
     return dict(id=f"r{rid}", polygon_uv=P.tolist(), floor_y=floor_y, area=float(area), area_sigma=s_area,
                 ceiling=ceiling, walls=walls, mask_area=float(mask.sum() * CELL * CELL))

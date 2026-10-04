@@ -138,13 +138,10 @@ def refine_edges(edges, wall_uv, wall_h, search=0.35):
     return out
 
 
-def wall_sigma(info):
-    """1-sigma uncertainty (m) of a wall surface position."""
-    if not info["observed"]:
-        return errors.UNOBSERVED_WALL_SIGMA
-    # Statistical error of the median plus the per-surface LiDAR bias floor.
-    stat = 1.2533 * info["std"] / np.sqrt(max(info["n"], 1))
-    return float(np.hypot(stat, errors.LIDAR_SURFACE_BIAS))
+def wall_sigma(info, prof):
+    """1-sigma uncertainty (m) of a wall surface position: statistical error
+    of the fitted position plus the tier's per-surface bias floor."""
+    return errors.wall_surface_sigma(prof, info["observed"], info["std"], info["n"])
 
 
 def find_openings(P, k, info, pts_uv, pts_h, floor_obs, frame, ceiling_h):
@@ -244,7 +241,7 @@ def snap_to_planes(infos, planes):
     return out
 
 
-def measure_room(rid, mask, frame, pts, floor_fit, ceil_fit, planes, floor_obs):
+def measure_room(rid, mask, frame, pts, floor_fit, ceil_fit, planes, floor_obs, prof=errors.LIDAR, extra_scale=0.0):
     """Full measurement for one room. pts are world points (N, 3)."""
     uv_all = frame.to_uv(pts)
     cc = frame.to_cell(uv_all)
@@ -267,7 +264,7 @@ def measure_room(rid, mask, frame, pts, floor_fit, ceil_fit, planes, floor_obs):
             cy = np.median(y[ce])
             sd_f = 1.4826 * np.median(np.abs(y[fl] - floor_y)) if fl.sum() > 50 else 0.02
             sd_c = 1.4826 * np.median(np.abs(y[ce] - cy))
-            sigma = errors.ceiling_sigma(cy - floor_y, sd_f, fl.sum(), sd_c, ce.sum())
+            sigma = errors.ceiling_sigma(prof, cy - floor_y, sd_f, fl.sum(), sd_c, ce.sum(), extra_scale)
             ceiling = dict(value=float(cy - floor_y), sigma=sigma, n_floor=int(fl.sum()), n_ceiling=int(ce.sum()))
 
     # Wall-band points near this room (dilated footprint) drive edge refinement.
@@ -282,7 +279,7 @@ def measure_room(rid, mask, frame, pts, floor_fit, ceil_fit, planes, floor_obs):
     if planes is not None:
         infos = snap_to_planes(infos, planes)
     P = vertices([(i["orient"], i["coord"]) for i in infos])
-    sig = [wall_sigma(i) for i in infos]
+    sig = [wall_sigma(i, prof) for i in infos]
 
     walls = []
     n = len(infos)
@@ -292,11 +289,11 @@ def measure_room(rid, mask, frame, pts, floor_fit, ceil_fit, planes, floor_obs):
         a, b = P[k], P[(k + 1) % n]
         L = float(np.linalg.norm(b - a))
         # Length is set by the two neighbouring (perpendicular) walls.
-        s_len = errors.length_sigma(L, sig[k - 1], sig[(k + 1) % n])
+        s_len = errors.length_sigma(prof, L, sig[k - 1], sig[(k + 1) % n], extra_scale)
         var_area += (L * sig[k]) ** 2
         ops = find_openings(P, k, info, uv_all[near], h[near], floor_obs, frame, ceiling["value"] if ceiling else None)
         walls.append(dict(id=f"r{rid}_w{k}", start=a.tolist(), end=b.tolist(), length=L, length_sigma=s_len,
                           observed=info["observed"], surface_sigma=sig[k], surface_spread=info["std"], openings=ops))
-    s_area = float(np.sqrt(var_area + (errors.SCALE_SIGMA * 2 * area) ** 2))
+    s_area = errors.area_sigma(prof, var_area, area, extra_scale)
     return dict(id=f"r{rid}", polygon_uv=P.tolist(), floor_y=floor_y, area=float(area), area_sigma=s_area,
                 ceiling=ceiling, walls=walls, mask_area=float(mask.sum() * CELL * CELL))

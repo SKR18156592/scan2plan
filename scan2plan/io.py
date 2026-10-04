@@ -30,7 +30,7 @@ class Capture:
     def confidence(self, i):
         return np.asarray(Image.open(self.root / "confidence" / f"{i:06d}.png"))
 
-    def K_depth(self, shape):
+    def K_depth(self, shape, i=None):
         h, w = shape
         K = self.K_rgb.copy()
         K[0] *= w / self.rgb_size[0]
@@ -53,7 +53,7 @@ def backproject(cap, i, min_conf=2, max_depth=5.0):
     """World-frame points (M, 3) from frame i, high-confidence pixels only."""
     d = cap.depth(i)
     c = cap.confidence(i)
-    K = cap.K_depth(d.shape)
+    K = cap.K_depth(d.shape, i)
     v, u = np.nonzero((c >= min_conf) & (d > 0.1) & (d < max_depth))
     z = d[v, u]
     pts = np.stack([(u - K[0, 2]) * z / K[0, 0], (v - K[1, 2]) * z / K[1, 1], z], 1)

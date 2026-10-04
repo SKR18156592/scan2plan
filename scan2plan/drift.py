@@ -149,7 +149,35 @@ ODO_SIGMA = np.array([0.01, 1e-4, 0.01, np.deg2rad(0.1)])
 LOOP_SIGMA = np.array([0.02, 1e-4, 0.02, np.deg2rad(0.3)])
 
 
-def optimize(n, edges):
+# Manhattan heading prior: per-fragment wall direction is measured to ~0.5 deg.
+MANHATTAN_SIGMA = np.deg2rad(0.5)
+
+
+def _wrap90(a):
+    q = np.pi / 2
+    return (a + q / 2) % q - q / 2
+
+
+def fragment_headings(frags, min_pts=1500):
+    """Dominant wall direction (rad, mod 90 deg) of each fragment, or nan.
+
+    In a rectilinear building every fragment's walls should share one
+    direction; a fragment whose walls are rotated by d has accumulated
+    heading drift d. This is the plane-anchored correction: it constrains
+    yaw everywhere, not only where the path happens to loop.
+    """
+    from .layout import dominant_angle
+    out = np.full(len(frags), np.nan)
+    for k, f in enumerate(frags):
+        if f is None:
+            continue
+        wp, _ = _wall_points(f["pts"])
+        if len(wp) >= min_pts:
+            out[k] = dominant_angle(wp[:, [0, 2]])
+    return out
+
+
+def optimize(n, edges, headings=None):
     """Per-fragment corrections C_k (4-DOF). C_0 fixed at identity.
 
     Odometry edge: C_k and C_{k+1} should be equal (consecutive fragments
@@ -166,7 +194,16 @@ def optimize(n, edges):
             d = P[b] - target
             d[3] = (d[3] + np.pi) % (2 * np.pi) - np.pi
             r.append(d / LOOP_SIGMA)
+        if headings is not None:
+            ok = np.isfinite(headings)
+            # Rotating a fragment by +yaw lowers its measured wall angle by yaw.
+            r.append(_wrap90(headings[ok] - P[ok, 3] - ref) / MANHATTAN_SIGMA)
         return np.concatenate(r)
+
+    if headings is not None:
+        h = headings[np.isfinite(headings)]
+        # Reference direction: circular median of the fragment headings (mod 90).
+        ref = h[0] + np.median(_wrap90(h - h[0]))
 
     x0 = np.zeros((n - 1) * 4)
     sol = least_squares(res, x0, loss="huber", f_scale=3.0)
@@ -179,17 +216,25 @@ def optimize(n, edges):
     return P, np.array(loop_res)
 
 
-def correct(cap, log=None, **kw):
+def correct(cap, log=None, manhattan=True):
     """Return drift-corrected camera poses (N, 4, 4) and a summary dict."""
     frags = fragments(cap)
-    # Fill empty fragments by position so indices stay aligned.
     edges = loop_edges(frags, log=log)
-    C, loop_res = optimize(len(frags), edges)
+    headings = fragment_headings(frags) if manhattan else None
+    C, loop_res = optimize(len(frags), edges, headings)
     centers = np.array([(f["start"] + f["end"]) / 2 if f else k * 90 + 45 for k, f in enumerate(frags)])
     frame_idx = np.arange(len(cap))
     Cf = np.stack([np.interp(frame_idx, centers, C[:, j]) for j in range(4)], 1)
     poses = np.array([_T(Cf[i]) @ cap.poses[i] for i in frame_idx])
-    summary = dict(method="fragment ICP loop closure + 4-DOF pose graph",
+    if headings is not None:
+        ok = np.isfinite(headings)
+        ref = headings[ok][0] + np.median(_wrap90(headings[ok] - headings[ok][0]))
+        before = np.rad2deg(_wrap90(headings[ok] - ref))
+        after = np.rad2deg(_wrap90(headings[ok] - C[ok, 3] - ref))
+    summary = dict(method="fragment ICP loop closure + Manhattan heading prior, pose graph (x, z, yaw)"
+                   if manhattan else "fragment ICP loop closure, pose graph (x, z, yaw)",
+                   heading_spread_deg=dict(before=float(before.std()), after=float(after.std()),
+                                           fragments_used=int(ok.sum())) if headings is not None else None,
                    fragments=len(frags), loop_edges=len(edges),
                    max_correction_m=float(np.linalg.norm(C[:, :3], axis=1).max()),
                    max_yaw_correction_deg=float(np.rad2deg(np.abs(C[:, 3]).max())),

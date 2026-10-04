@@ -213,7 +213,38 @@ def find_openings(P, k, info, pts_uv, pts_h, floor_obs, frame, ceiling_h):
     return out
 
 
-def measure_room(rid, mask, frame, pts, floor_fit, ceil_fit, wall_mask_uv, floor_obs):
+def snap_to_planes(infos, planes):
+    """Replace each edge's local surface estimate with the global wall plane it
+    sits on (walls.snap), then collapse jogs that snapping made zero-length."""
+    from . import walls as W
+    P = vertices([(i["orient"], i["coord"]) for i in infos])
+    out = []
+    for k, info in enumerate(infos):
+        a, b = P[k], P[(k + 1) % len(P)]
+        along = 0 if info["orient"] == "h" else 1
+        lo, hi = sorted((a[along], b[along]))
+        pl = W.snap(info["orient"], info["coord"], lo, hi, info["inward"], planes)
+        info = dict(info)
+        if pl is not None:
+            info.update(coord=pl.coord, observed=True, n=pl.n, std=pl.std, plane=True)
+        out.append(info)
+    # Collapse: an edge whose two neighbours now lie on the same plane is a
+    # jog that does not exist; drop it and merge the neighbours.
+    changed = True
+    while changed and len(out) > 4:
+        changed = False
+        n = len(out)
+        for k in range(n):
+            i, j = (k - 1) % n, (k + 1) % n
+            if out[i]["orient"] == out[j]["orient"] and abs(out[i]["coord"] - out[j]["coord"]) < 0.03:
+                keep = out[i] if out[i]["n"] >= out[j]["n"] else out[j]
+                out = [keep if t == i else out[t] for t in range(n) if t not in (k, j)]
+                changed = True
+                break
+    return out
+
+
+def measure_room(rid, mask, frame, pts, floor_fit, ceil_fit, planes, floor_obs):
     """Full measurement for one room. pts are world points (N, 3)."""
     uv_all = frame.to_uv(pts)
     cc = frame.to_cell(uv_all)
@@ -248,6 +279,8 @@ def measure_room(rid, mask, frame, pts, floor_fit, ceil_fit, wall_mask_uv, floor
     band = near & (h > 0.15) & (h < top)
     edges = outline(mask, frame)
     infos = refine_edges(edges, uv_all[band], h[band])
+    if planes is not None:
+        infos = snap_to_planes(infos, planes)
     P = vertices([(i["orient"], i["coord"]) for i in infos])
     sig = [wall_sigma(i) for i in infos]
 

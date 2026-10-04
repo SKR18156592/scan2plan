@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scan2plan"
+version = "0.1.0"
+description = "Phone capture (LiDAR, video or photos) to dimensioned, stitched floor plan with damage and scope"
+requires-python = ">=3.10"
+
+[project.scripts]
+scan2plan = "scan2plan.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["scan2plan*"]

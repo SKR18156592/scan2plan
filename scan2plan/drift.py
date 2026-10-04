@@ -1,11 +1,12 @@
 """Drift correction: fragment loop closure + 4-DOF pose graph.
 
 ARKit odometry is gravity-aligned, so roll and pitch do not drift; what
-accumulates is yaw and translation. The trajectory is cut into short
+accumulates is yaw and horizontal translation. Height is anchored by the
+floor plane, so the graph is effectively 3-DOF (x, z, yaw). The trajectory is cut into short
 fragments (each locally accurate). Fragments that revisit the same place
 later in the capture are aligned with point-to-plane ICP; each accepted
 alignment is a loop-closure edge. A pose graph over per-fragment corrections
-(tx, ty, tz, yaw) is solved with odometry edges (consecutive fragments keep
+(tx, tz, yaw) is solved with odometry edges (consecutive fragments keep
 their relative pose) and loop edges, then corrections are interpolated to
 every frame.
 """
@@ -59,40 +60,58 @@ def _normals(pts, tree, k=12):
 
 
 def icp(src, dst, dst_tree, dst_n, iters=30, max_dist=0.15):
-    """Point-to-plane ICP, 4-DOF (yaw + translation). Returns (T, fitness, rmse)."""
+    """Point-to-plane ICP in the floor plane: (tx, tz, yaw), ty fixed at 0.
+
+    Height is anchored by the floor plane (every fragment sees the floor and
+    ARKit's vertical is gravity-referenced), so ICP is not allowed to slide
+    fragments vertically. Only wall points (horizontal normals) are passed in.
+
+    Returns (T, fitness, rmse, min_eig_ratio). The eigenvalue ratio of the
+    3x3 normal matrix measures how well-constrained the alignment is; a
+    corridor (two parallel walls) leaves translation along it unconstrained.
+    """
     p = np.zeros(4)
+    H = np.eye(3)
     for it in range(iters):
         T = _T(p)
         s = src @ T[:3, :3].T + T[:3, 3]
         d, j = dst_tree.query(s, distance_upper_bound=max_dist)
         m = np.isfinite(d)
         if m.sum() < 100:
-            return None, 0.0, np.inf
+            return None, 0.0, np.inf, 0.0
         q, n, sm = dst[j[m]], dst_n[j[m]], s[m]
         r = np.einsum("ij,ij->i", sm - q, n)
-        # Jacobian wrt (tx, ty, tz, yaw) at current estimate (small-angle about y).
         c = sm - T[:3, 3]
         dyaw = np.stack([c[:, 2], np.zeros(len(c)), -c[:, 0]], 1)
-        J = np.c_[n, np.einsum("ij,ij->i", dyaw, n)]
-        # Huber-style weights.
+        J = np.c_[n[:, 0], n[:, 2], np.einsum("ij,ij->i", dyaw, n)]
         w = 1.0 / np.maximum(1.0, np.abs(r) / 0.02)
         H = J.T @ (J * w[:, None])
         g = J.T @ (w * r)
-        dp = -np.linalg.solve(H + 1e-6 * np.eye(4), g)
-        p += dp
-        if np.abs(dp[:3]).max() < 1e-4 and abs(dp[3]) < 1e-5:
+        dp = -np.linalg.solve(H + 1e-6 * np.eye(3), g)
+        p[[0, 2, 3]] += dp
+        if np.abs(dp[:2]).max() < 1e-4 and abs(dp[2]) < 1e-5:
             break
         max_dist = max(0.05, max_dist * 0.85)
     T = _T(p)
     s = src @ T[:3, :3].T + T[:3, 3]
     d, _ = dst_tree.query(s, distance_upper_bound=0.05)
     m = np.isfinite(d)
-    return T, float(m.mean()), float(np.sqrt(np.mean(d[m] ** 2))) if m.any() else np.inf
+    # Conditioning of the translation block only (yaw is scaled differently).
+    ev = np.linalg.eigvalsh(H[:2, :2])
+    ratio = float(ev[0] / max(ev[1], 1e-12))
+    return T, float(m.mean()), float(np.sqrt(np.mean(d[m] ** 2))) if m.any() else np.inf, ratio
 
 
-def loop_edges(frags, min_gap=8, radius=1.5, min_fitness=0.35, log=None):
+def _wall_points(pts, k=12):
+    tree = cKDTree(pts)
+    n = _normals(pts, tree, k)
+    keep = np.abs(n[:, 1]) < 0.3
+    return pts[keep], n[keep]
+
+
+def loop_edges(frags, min_gap=8, radius=1.5, min_fitness=0.35, min_cond=0.1, log=None):
     valid = [k for k, f in enumerate(frags) if f is not None]
-    trees, normals = {}, {}
+    walls = {}
     edges = []
     for a in valid:
         for b in valid:
@@ -100,19 +119,25 @@ def loop_edges(frags, min_gap=8, radius=1.5, min_fitness=0.35, log=None):
                 continue
             if np.linalg.norm(frags[a]["center"] - frags[b]["center"]) > radius:
                 continue
-            if a not in trees:
-                trees[a] = cKDTree(frags[a]["pts"])
-                normals[a] = _normals(frags[a]["pts"], trees[a])
-            src = frags[b]["pts"]
+            for k in (a, b):
+                if k not in walls:
+                    wp, wn = _wall_points(frags[k]["pts"])
+                    walls[k] = (wp, wn, cKDTree(wp) if len(wp) else None)
+            dst, dst_n, tree = walls[a]
+            src = walls[b][0]
+            if len(src) < 500 or len(dst) < 500:
+                continue
             if len(src) > 15000:
                 src = src[np.random.default_rng(b).choice(len(src), 15000, replace=False)]
-            T, fit, rmse = icp(src, frags[a]["pts"], trees[a], normals[a])
+            T, fit, rmse, cond = icp(src, dst, tree, dst_n)
             if T is None:
                 continue
             p = _params(T)
-            ok = fit >= min_fitness and np.linalg.norm(p[:3]) < 0.6 and abs(np.rad2deg(p[3])) < 8
+            ok = (fit >= min_fitness and cond >= min_cond and np.linalg.norm(p[:3]) < 0.6
+                  and abs(np.rad2deg(p[3])) < 8)
             if log is not None:
-                log.append(dict(a=a, b=b, fitness=fit, rmse=rmse, t=p[:3].tolist(), yaw_deg=float(np.rad2deg(p[3])), accepted=bool(ok)))
+                log.append(dict(a=a, b=b, fitness=fit, rmse=rmse, cond=cond, t=p[:3].tolist(),
+                                yaw_deg=float(np.rad2deg(p[3])), accepted=bool(ok)))
             if ok:
                 edges.append((a, b, T, fit))
     return edges
@@ -120,8 +145,8 @@ def loop_edges(frags, min_gap=8, radius=1.5, min_fitness=0.35, log=None):
 
 # Noise model (1 sigma). Odometry: drift accumulated across one ~2 s
 # fragment boundary. Loop: ICP alignment error between two fragments.
-ODO_SIGMA = np.array([0.01, 0.01, 0.01, np.deg2rad(0.1)])
-LOOP_SIGMA = np.array([0.02, 0.02, 0.02, np.deg2rad(0.3)])
+ODO_SIGMA = np.array([0.01, 1e-4, 0.01, np.deg2rad(0.1)])
+LOOP_SIGMA = np.array([0.02, 1e-4, 0.02, np.deg2rad(0.3)])
 
 
 def optimize(n, edges):

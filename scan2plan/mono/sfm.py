@@ -69,6 +69,14 @@ def run(images, out, sequential=False, max_size=1024, mapper="incremental", feat
     reader = pycolmap.ImageReaderOptions()
     reader.camera_model = "SIMPLE_RADIAL"
     reader.default_focal_length_factor = IPHONE_FOCAL_FACTOR
+    # Explicit intrinsics make COLMAP treat the focal as a prior, so pairs
+    # verify as calibrated (essential matrix) instead of uncalibrated
+    # (fundamental matrix), which initialises far more reliably.
+    from PIL import Image
+    sizes = {Image.open(images / n).size for n in names}
+    if len(sizes) == 1:
+        w, h = sizes.pop()
+        reader.camera_params = f"{IPHONE_FOCAL_FACTOR * max(w, h)},{w / 2},{h / 2},0"
     # Video frames share one camera; photos may come from different lenses.
     mode = pycolmap.CameraMode.SINGLE if sequential else pycolmap.CameraMode.AUTO
     pycolmap.extract_features(db, images, image_names=names, camera_mode=mode, reader_options=reader, extraction_options=ext)

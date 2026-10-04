@@ -85,28 +85,31 @@ def run(kind, src, out, model="base", damage=True):
             args += ["--sequential", "6"]
         timing["features_s"] = _stage(args, log)
     sfm_dir = work / "sfm"
-    if not (sfm_dir / "sfm.json").exists():
+    if kind == "video" and not (sfm_dir / "sfm.json").exists():
         args = ["scan2plan.mono.sfm", str(img), str(sfm_dir), "--features", str(feats)]
         if kind == "video":
             args.append("--sequential")
         timing["sfm_s"] = _stage(args, log)
 
-    from .build import load, orientation, refine_gravity_with_floor
-    rot = orientation(sfm_dir / "sfm.json")
+    from .build import load, load_depthgraph, orientation, refine_gravity_with_floor
+    # Photos arrive upright (EXIF applied in prepare); video orientation is
+    # recovered from SfM gravity.
+    rot = orientation(sfm_dir / "sfm.json") if kind == "video" else 0
     depth_dir = work / f"depth_{model}"
     if not depth_dir.exists():
         timing["depth_s"] = _stage(["scan2plan.mono.depth", str(img), str(depth_dir), "--model", model, "--rot", str(rot)], log)
 
-    sfm = json.load(open(sfm_dir / "sfm.json"))
-    n_total = len(sfm["images"])
-    reg = [len(m["images"]) for m in sfm["models"]]
-    cap, stats = load(sfm_dir / "sfm.json", depth_dir, image_root=img)
+    if kind == "video":
+        cap, stats = load(sfm_dir / "sfm.json", depth_dir, image_root=img, features=feats)
+    else:
+        cap, stats = load_depthgraph(img, depth_dir, feats)
+    n_total = stats["images_total"]
     # Undo the network's measured scale bias (both the SfM scale and every
     # depth map inherit it).
     cap.poses[:, :3, 3] /= MONO_DEPTH_BIAS
     cap.depth_scale = cap.depth_scale / MONO_DEPTH_BIAS
     stats.update(image_rotation_quarter_turns=rot, depth_model=model, depth_bias_correction=MONO_DEPTH_BIAS,
-                 models_registered=reg, images_total=n_total)
+                 images_total=n_total)
 
     t = time.time()
     pts, w = fuse(cap, step=1, max_depth=5.0)

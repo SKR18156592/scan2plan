@@ -41,10 +41,11 @@ def main(cap_dir, plan_path, out, per_room=8, min_room_m2=2.0):
         idx = np.flatnonzero(inside)
         if len(idx) < 2:
             continue
-        # Spread over heading: bin yaw into per_room sectors, take the
-        # middle frame of each occupied sector.
-        bins = ((yaw[idx] + np.pi) / (2 * np.pi) * per_room).astype(int) % per_room
-        pick = [idx[bins == b][len(idx[bins == b]) // 2] for b in range(per_room) if (bins == b).any()]
+        # Evenly spaced in time over the room visit: the protocol asks for
+        # photos from different spots that overlap their neighbours, which is
+        # what consecutive positions along a walk give. (Spreading by heading
+        # instead gave near-zero overlap and no baseline; SfM registered 2/34.)
+        pick = idx[np.linspace(0, len(idx) - 1, min(per_room, len(idx))).round().astype(int)]
         for i in pick:
             frames_needed[int(i)] = r["id"]
     out = Path(out)

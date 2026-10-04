@@ -16,14 +16,15 @@ import torch
 import kornia.feature as KF
 from PIL import Image, ImageOps
 
-MAX_SIDE = 1024
-NUM_KP = 1024
+# Video: many frames, consecutive ones overlap heavily -> fewer, cheaper
+# features. Photos: few images with wide baselines -> as many as affordable.
+SETTINGS = {"video": (1024, 1024), "photos": (1600, 4096)}
 
 
-def load_img(p, dev):
+def load_img(p, dev, max_side):
     img = ImageOps.exif_transpose(Image.open(p)).convert("RGB")
     w, h = img.size
-    s = MAX_SIDE / max(w, h)
+    s = max_side / max(w, h)
     img = img.resize((int(round(w * s / 16) * 16), int(round(h * s / 16) * 16)), Image.BILINEAR)
     t = torch.from_numpy(np.asarray(img)).float().permute(2, 0, 1)[None] / 255.0
     return t.to(dev), (w, h), (img.size[0] / w, img.size[1] / h)
@@ -31,6 +32,7 @@ def load_img(p, dev):
 
 @torch.no_grad()
 def run(images, out, window=None):
+    max_side, num_kp = SETTINGS["video" if window else "photos"]
     dev = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     disk = KF.DISK.from_pretrained("depth").to(dev).eval()
     lg = KF.LightGlue("disk").to(dev).eval()
@@ -38,8 +40,8 @@ def run(images, out, window=None):
     names = sorted(str(p.relative_to(images)) for p in images.rglob("*") if p.suffix.lower() in (".jpg", ".jpeg", ".png"))
     feats = []
     for n in names:
-        t, size, sc = load_img(images / n, dev)
-        f = disk(t, n=NUM_KP, pad_if_not_divisible=True)[0]
+        t, size, sc = load_img(images / n, dev, max_side)
+        f = disk(t, n=num_kp, pad_if_not_divisible=True)[0]
         kp = f.keypoints.cpu().numpy() / np.array(sc)  # back to original pixels
         feats.append(dict(kp=kp, kp_net=f.keypoints, desc=f.descriptors, size=t.shape[-2:], orig=size))
     n = len(names)

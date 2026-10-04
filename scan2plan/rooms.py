@@ -265,7 +265,10 @@ def measure_room(rid, mask, frame, pts, floor_fit, ceil_fit, planes, floor_obs, 
             sd_f = 1.4826 * np.median(np.abs(y[fl] - floor_y)) if fl.sum() > 50 else 0.02
             sd_c = 1.4826 * np.median(np.abs(y[ce] - cy))
             sigma = errors.ceiling_sigma(prof, cy - floor_y, sd_f, fl.sum(), sd_c, ce.sum(), extra_scale)
-            ceiling = dict(value=float(cy - floor_y), sigma=sigma, n_floor=int(fl.sum()), n_ceiling=int(ce.sum()))
+            # Residential ceilings are 2.0-4.0 m; outside that the "ceiling"
+            # is a shelf/soffit or a mono-depth failure: report not observed.
+            if 2.0 <= cy - floor_y <= 4.0:
+                ceiling = dict(value=float(cy - floor_y), sigma=sigma, n_floor=int(fl.sum()), n_ceiling=int(ce.sum()))
 
     # Wall-band points near this room (dilated footprint) drive edge refinement.
     near = np.zeros(len(pts), bool)

@@ -117,9 +117,13 @@ def analyze(name, tier, pts, w, P, drift_tag, timing, t0, out_dir, prof, extra_s
     planes = W.detect(frame.to_uv(pts[band]), hh[band], top)
     timing["planes"] = len(planes)
     rooms = []
+    keep = np.zeros_like(labels)
     for k in range(1, labels.max() + 1):
-        r = measure_room(k, labels == k, frame, pts, floor, ceil, planes, g["floor"], prof, extra_scale)
-        rooms.append(r)
+        if (labels == k).sum() * CELL * CELL < 1.0:
+            continue  # fragments: a room under 1 m^2 is a segmentation artefact
+        keep[labels == k] = len(rooms) + 1
+        rooms.append(measure_room(len(rooms) + 1, labels == k, frame, pts, floor, ceil, planes, g["floor"], prof, extra_scale))
+    labels = keep
     timing["measure_s"] = time.time() - t
 
     # Assemble output contract.

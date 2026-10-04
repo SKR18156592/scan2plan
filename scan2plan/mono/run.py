@@ -50,6 +50,11 @@ def prepare(kind, src, work):
         extract(src, img, every_s=0.5)
     else:
         from PIL import Image, ImageOps
+        try:  # iPhone photos are HEIC by default
+            import pillow_heif
+            pillow_heif.register_heif_opener()
+        except ImportError:
+            pass
         for room in sorted(p for p in Path(src).iterdir() if p.is_dir()):
             for p in sorted(room.iterdir()):
                 if p.suffix.lower() not in (".jpg", ".jpeg", ".png", ".heic"):
@@ -64,7 +69,7 @@ def prepare(kind, src, work):
     return img
 
 
-def run(kind, src, out, model="base"):
+def run(kind, src, out, model="base", damage=True):
     t0 = time.time()
     out = Path(out)
     work = out / "work"
@@ -117,9 +122,18 @@ def run(kind, src, out, model="base"):
     if kind == "photos":
         room_labels = _folder_rooms(cap, pts)
     tag = dict(enabled=False, method="COLMAP global bundle adjustment (no separate pose graph)")
+    dmg = None
+    if damage:
+        from .. import damage as D
+        paths = {i: str(img / n) for i, n in enumerate(cap.names)}
+        if kind == "video" and len(paths) > 120:
+            paths = {i: p for i, p in paths.items() if i % 2 == 0}
+
+        def dmg(result):
+            return D.run(cap, result, paths, rot, work, prof, min_views=2 if kind == "video" else 1)
     title = f"{Path(src).name} - {kind} tier ({len(cap)}/{n_total} images registered)"
     return analyze(Path(src).stem, "photo" if kind == "photos" else "video", pts, w, cap.poses, tag, timing, t0,
-                   out, prof, extra_scale=extra, room_labels=room_labels, meta=stats, title=title)
+                   out, prof, extra_scale=extra, room_labels=room_labels, meta=stats, title=title, damage=dmg)
 
 
 def _folder_rooms(cap, pts_unused):

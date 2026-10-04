@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "scan2plan/plan.schema.json",
+  "title": "scan2plan plan output",
+  "description": "One file per capture. Lengths in metres, areas in m^2. Every measurement is {value, sigma, ci95} with ci95 = value +- 1.96 sigma; value null means not observed (status says why). The case study refers to a published schema that was not included in the brief; this is the schema this submission publishes.",
+  "type": "object",
+  "required": ["schema_version", "capture", "tier", "units", "rooms", "adjacency", "property", "damage_regions", "concealed_damage_flags", "scope_items", "timing_s"],
+  "$defs": {
+    "measurement": {
+      "type": "object",
+      "required": ["value", "sigma", "ci95"],
+      "properties": {
+        "value": {"type": ["number", "null"]},
+        "sigma": {"type": ["number", "null"]},
+        "ci95": {"type": ["array", "null"], "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+        "status": {"type": "string", "enum": ["measured", "not_observed"]},
+        "note": {"type": "string"}
+      }
+    },
+    "point": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}
+  },
+  "properties": {
+    "schema_version": {"type": "string"},
+    "capture": {"type": "string"},
+    "tier": {"type": "string", "enum": ["lidar", "video", "photo"]},
+    "units": {"const": "m"},
+    "interval": {"type": "string"},
+    "error_profile": {"type": "object"},
+    "plan_frame": {"type": "object", "properties": {"rotation_deg": {"type": "number"}, "note": {"type": "string"}}},
+    "drift_correction": {"type": "object"},
+    "rooms": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "polygon", "floor_area", "ceiling_height", "walls"],
+        "properties": {
+          "id": {"type": "string"},
+          "name": {"type": "string"},
+          "polygon": {"type": "array", "items": {"$ref": "#/$defs/point"}},
+          "floor_area": {"$ref": "#/$defs/measurement"},
+          "ceiling_height": {"$ref": "#/$defs/measurement"},
+          "floor_y_world": {"type": "number"},
+          "walls": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "start", "end", "length", "observed", "openings"],
+              "properties": {
+                "id": {"type": "string", "description": "surface key used by damage regions and scope items"},
+                "start": {"$ref": "#/$defs/point"},
+                "end": {"$ref": "#/$defs/point"},
+                "length": {"$ref": "#/$defs/measurement"},
+                "observed": {"type": "boolean"},
+                "openings": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["id", "type", "offset", "width"],
+                    "properties": {
+                      "id": {"type": "string"},
+                      "type": {"type": "string", "enum": ["door", "opening", "window"]},
+                      "offset": {"type": "number", "description": "from wall start along the wall"},
+                      "width": {"$ref": "#/$defs/measurement"},
+                      "connects_to": {"type": ["string", "null"]}
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "adjacency": {
+      "type": "array",
+      "items": {"type": "object", "required": ["rooms", "via"], "properties": {"rooms": {"type": "array", "items": {"type": "string"}}, "via": {}}}
+    },
+    "property": {"type": "object", "required": ["room_count", "footprint"], "properties": {"room_count": {"type": "integer"}, "footprint": {"$ref": "#/$defs/measurement"}}},
+    "damage_regions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "cls", "surface", "surface_type", "extent", "area", "score"],
+        "properties": {
+          "id": {"type": "string"},
+          "cls": {"type": "string", "enum": ["water_stain", "mold", "crack", "hole", "peeling_paint"]},
+          "surface": {"type": "string", "description": "wall id, <room>_floor or <room>_ceiling"},
+          "surface_type": {"type": "string", "enum": ["wall", "floor", "ceiling"]},
+          "extent": {"type": "array", "items": {"type": "number"}, "description": "metres along the surface's two axes"},
+          "extent_sigma": {"type": "array", "items": {"type": "number"}},
+          "area": {"$ref": "#/$defs/measurement"},
+          "score": {"type": "number"},
+          "frames": {"type": "array", "items": {"type": "integer"}}
+        }
+      }
+    },
+    "concealed_damage_flags": {
+      "type": "array",
+      "items": {"type": "object", "required": ["rule", "region", "surface", "finding"]}
+    },
+    "scope_items": {
+      "type": "array",
+      "items": {"type": "object", "required": ["surface", "item", "unit", "quantity"], "properties": {"quantity": {"$ref": "#/$defs/measurement"}}}
+    },
+    "timing_s": {"type": "object"}
+  }
+}

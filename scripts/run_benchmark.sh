@@ -8,7 +8,7 @@ OUT=${2:-out/bench}
 PY=${PY:-.venv/bin/python}
 mkdir -p "$OUT"
 for cap in single_room single_scan_floor_only single_scan_with_ceiling; do
-  $PY -m scan2plan "$DATA/$cap" --out "$OUT/$cap" | tee "$OUT/$cap.log"
+  $PY -m scan2plan run lidar "$DATA/$cap" --out "$OUT/$cap" | tee "$OUT/$cap.log"
 done
 # Repeatability: the two whole-apartment captures.
 $PY scripts/repeatability.py "$OUT/single_scan_floor_only/plan.json" \

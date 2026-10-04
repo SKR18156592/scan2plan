@@ -1,0 +1,2 @@
+[console_scripts]
+scan2plan = scan2plan.__main__:main

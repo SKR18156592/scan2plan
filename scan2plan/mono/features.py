@@ -17,7 +17,7 @@ import kornia.feature as KF
 from PIL import Image, ImageOps
 
 MAX_SIDE = 1024
-NUM_KP = 2048
+NUM_KP = 1024
 
 
 def load_img(p, dev):

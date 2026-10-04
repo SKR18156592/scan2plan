@@ -77,9 +77,16 @@ def run(capture_dir, out_dir, drift_correction=True, step=3, cache_dir="out/cach
     timing["layout_s"] = time.time() - t
 
     t = time.time()
+    # Global wall planes, detected once per capture (see docs/FIX_DECLARATION.md).
+    from . import walls as W
+    hh = pts[:, 1] - floor["c"]
+    top = (ceil["c"] - floor["c"] - 0.15) if ceil else 2.4
+    band = (hh > 0.15) & (hh < top) & (w >= 2)
+    planes = W.detect(frame.to_uv(pts[band]), hh[band], top)
+    timing["planes"] = len(planes)
     rooms = []
     for k in range(1, labels.max() + 1):
-        r = measure_room(k, labels == k, frame, pts, floor, ceil, None, g["floor"])
+        r = measure_room(k, labels == k, frame, pts, floor, ceil, planes, g["floor"])
         rooms.append(r)
     timing["measure_s"] = time.time() - t
 

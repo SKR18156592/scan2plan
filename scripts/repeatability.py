@@ -32,19 +32,15 @@ def rot(t):
 
 
 def icp2d(src, dst, R, t, iters=60):
+    """Translation-only ICP. Both plans are expressed in their own
+    dominant-wall frame, so the rotation between them is exactly k*90 deg;
+    letting ICP rotate lets mismatched rooms tilt the whole registration."""
     tree = cKDTree(dst)
     for _ in range(iters):
         s = src @ R.T + t
         d, j = tree.query(s)
-        m = d < np.percentile(d, 80)
-        A, B = s[m], dst[j[m]]
-        ca, cb = A.mean(0), B.mean(0)
-        U, _, Vt = np.linalg.svd((A - ca).T @ (B - cb))
-        dR = (U @ Vt).T
-        if np.linalg.det(dR) < 0:
-            Vt[-1] *= -1
-            dR = (U @ Vt).T
-        R, t = dR @ R, dR @ (t - ca) + cb
+        m = d < np.percentile(d, 60)
+        t = t + np.median(dst[j[m]] - s[m], axis=0)
     d, _ = tree.query(src @ R.T + t)
     return R, t, float(np.median(d))
 
@@ -54,10 +50,13 @@ def register(pa, pb):
     best = None
     for k in range(4):
         R0 = rot(k * np.pi / 2)
-        t0 = A.mean(0) - B.mean(0) @ R0.T
-        R, t, err = icp2d(B, A, R0, t0)
-        if best is None or err < best[2]:
-            best = (R, t, err)
+        # Several translation starts: centroids differ when room coverage does.
+        for dx in (-1.0, 0.0, 1.0):
+            for dy in (-1.0, 0.0, 1.0):
+                t0 = A.mean(0) - B.mean(0) @ R0.T + np.array([dx, dy])
+                R, t, err = icp2d(B, A, R0, t0)
+                if best is None or err < best[2]:
+                    best = (R, t, err)
     return best
 
 

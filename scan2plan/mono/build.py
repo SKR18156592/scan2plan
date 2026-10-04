@@ -137,52 +137,143 @@ def orientation(sfm_json, model_index=0):
     return image_up_rotation(T[:, :3, :3], sfm_up(m))
 
 
-def load(sfm_json, depth_dir, model_index=0, image_root=None):
-    sfm = json.load(open(sfm_json))
-    if not sfm["models"]:
-        raise RuntimeError("SfM registered no images")
-    m = sfm["models"][model_index]
+def _model_metric(m, depth_dir):
+    """One SfM model scaled to (uncalibrated) metric by its own mono/SfM ratio."""
     names = sorted(m["images"])
-    depth_dir = Path(depth_dir)
     T = np.array([m["images"][n]["T_wc"] for n in names])
     Ks = [np.array(m["images"][n]["K"]) for n in names]
     sizes = [(m["images"][n]["width"], m["images"][n]["height"]) for n in names]
-
-    # Global scale from sparse points.
     ratios, per_image = [], []
     for n, K, (w, h) in zip(names, Ks, sizes):
         obs = np.array(m["images"][n]["obs"]).reshape(-1, 3)
         d = np.load(depth_dir / Path(n).with_suffix(".npy")).astype(np.float32)
-        if len(obs) < 10:
-            per_image.append(None)
-            continue
-        u = np.clip((obs[:, 0] / w * d.shape[1]).astype(int), 0, d.shape[1] - 1)
-        v = np.clip((obs[:, 1] / h * d.shape[0]).astype(int), 0, d.shape[0] - 1)
-        r = d[v, u] / obs[:, 2]
-        r = r[np.isfinite(r) & (r > 0)]
-        if len(r) >= 10:
+        r = None
+        if len(obs) >= 10:
+            u = np.clip((obs[:, 0] / w * d.shape[1]).astype(int), 0, d.shape[1] - 1)
+            v = np.clip((obs[:, 1] / h * d.shape[0]).astype(int), 0, d.shape[0] - 1)
+            r = d[v, u] / obs[:, 2]
+            r = r[np.isfinite(r) & (r > 0)]
+            if len(r) < 10:
+                r = None
+        per_image.append(r)
+        if r is not None:
             ratios.append(r)
-            per_image.append(r)
-        else:
-            per_image.append(None)
-    allr = np.concatenate(ratios)
-    s = float(np.median(allr))
-    img_scales = np.array([np.median(r) for r in ratios])
+    if not ratios:
+        return None
+    s = float(np.median(np.concatenate(ratios)))
     # Per-image correction k_i = s / median(mono/SfM) on that image.
-    k = np.array([s / np.median(r) if r is not None else 1.0 for r in per_image])
-    k = np.clip(k, 0.7, 1.4)
-
+    k = np.clip([s / np.median(r) if r is not None else 1.0 for r in per_image], 0.7, 1.4)
     T[:, :3, 3] *= s
-    up = sfm_up(m)
+    return dict(names=names, T=T, Ks=Ks, sizes=sizes, k=np.asarray(k, float),
+                img_scales=[float(np.median(r)) for r in ratios], n_ratios=int(sum(len(r) for r in ratios)))
+
+
+def _chain(models, depth_dir, features, min_inliers=40):
+    """Attach models to the largest one through depth-lifted feature matches
+    (see merge.py). Returns the merged model and a log of the links made."""
+    from .merge import lift, ransac_rigid
+    f = np.load(features)
+    fnames = [str(n) for n in f["names"]]
+    fidx = {n: i for i, n in enumerate(fnames)}
+    pair_keys = [k for k in f.files if k.startswith("m_")]
+    merged, rest = models[0], list(models[1:])
+    where = {n: ("m", i) for i, n in enumerate(merged["names"])}
+    links = []
+
+    def cam_pts(model, i, kp_idx, fi):
+        n = model["names"][i]
+        d = np.load(depth_dir / Path(n).with_suffix(".npy")).astype(np.float32) * model["k"][i]
+        P, ok = lift(f[f"kp_{fi}"][kp_idx], d, model["Ks"][i], model["sizes"][i])
+        T = model["T"][i]
+        return P @ T[:3, :3].T + T[:3, 3], ok
+
+    while rest:
+        best = None
+        for ci, c in enumerate(rest):
+            cidx = {n: i for i, n in enumerate(c["names"])}
+            for key in pair_keys:
+                a, b = map(int, key[2:].split("_"))
+                na, nb = fnames[a], fnames[b]
+                if na in where and nb in cidx:
+                    im, ic, fm, fc, cols = where[na][1], cidx[nb], a, b, (0, 1)
+                elif nb in where and na in cidx:
+                    im, ic, fm, fc, cols = where[nb][1], cidx[na], b, a, (1, 0)
+                else:
+                    continue
+                mt = f[key]
+                Xm, okm = cam_pts(merged, im, mt[:, cols[0]], fm)
+                Xc, okc = cam_pts(c, ic, mt[:, cols[1]], fc)
+                ok = okm & okc
+                M, ninl = ransac_rigid(Xc[ok], Xm[ok])
+                if M is not None and ninl >= min_inliers and (best is None or ninl > best[0]):
+                    best = (ninl, ci, M, merged["names"][im], c["names"][ic])
+        if best is None:
+            break
+        ninl, ci, M, na, nb = best
+        c = rest.pop(ci)
+        # COLMAP may put one image in two models; keep its first placement.
+        keep = [i for i, n in enumerate(c["names"]) if n not in where]
+        c = dict(c, names=[c["names"][i] for i in keep], T=c["T"][keep], Ks=[c["Ks"][i] for i in keep],
+                 sizes=[c["sizes"][i] for i in keep], k=c["k"][keep])
+        Tc = M[None] @ c["T"]
+        base = len(merged["names"])
+        for key in ("names", "Ks", "sizes", "img_scales"):
+            merged[key] = list(merged[key]) + list(c[key])
+        merged["T"] = np.concatenate([merged["T"], Tc])
+        merged["k"] = np.concatenate([merged["k"], c["k"]])
+        merged["n_ratios"] += c["n_ratios"]
+        for i, n in enumerate(c["names"]):
+            where[n] = ("m", base + i)
+        links.append(dict(images=len(c["names"]), via=[na, nb], inliers=ninl))
+    return merged, links, [len(r["names"]) for r in rest]
+
+
+def _up_from_points(T, names, Ks, sizes, k, depth_dir, up):
+    """Resolve the sign of `up`: the scene (lifted mono depth) is mostly below
+    the cameras for handheld capture."""
+    heights = []
+    for i in range(0, len(names), max(1, len(names) // 40)):
+        d = np.load(depth_dir / Path(names[i]).with_suffix(".npy")).astype(np.float32) * k[i]
+        H, W = d.shape
+        K = np.array(Ks[i], float).copy()
+        K[0] *= W / sizes[i][0]
+        K[1] *= H / sizes[i][1]
+        v, u = np.mgrid[0:H:8, 0:W:8]
+        z = d[v, u]
+        P = np.stack([(u - K[0, 2]) * z / K[0, 0], (v - K[1, 2]) * z / K[1, 1], z], -1).reshape(-1, 3)
+        Pw = P @ T[i, :3, :3].T + T[i, :3, 3]
+        heights.append(np.median((Pw - T[i, :3, 3]) @ up))
+    return up if np.median(heights) < 0 else -up
+
+
+def load(sfm_json, depth_dir, image_root=None, features=None):
+    """All SfM models -> one gravity-aligned, metric (pre-calibration) capture."""
+    sfm = json.load(open(sfm_json))
+    depth_dir = Path(depth_dir)
+    models = [mm for mm in (_model_metric(m, depth_dir) for m in sfm["models"] if len(m["images"]) >= 3) if mm]
+    if not models:
+        raise RuntimeError("SfM registered no usable model")
+    links, unplaced = [], [len(m["names"]) for m in models[1:]]
+    if features is not None and len(models) > 1:
+        merged, links, unplaced = _chain(models, depth_dir, features)
+    else:
+        merged = models[0]
+    names, T, Ks, sizes, k = merged["names"], merged["T"], merged["Ks"], merged["sizes"], merged["k"]
+    up, _ = gravity_from_cameras(T[:, :3, :3])
+    up = _up_from_points(T, names, Ks, sizes, k, depth_dir, up)
     Rg = align_up(up)
     T[:, :3, :3] = Rg @ T[:, :3, :3]
     T[:, :3, 3] = T[:, :3, 3] @ Rg.T
-    stats = dict(scale=s, n_ratios=int(len(allr)), images_registered=len(names),
-                 images_total=len(sfm["images"]),
-                 per_image_scale_spread=float(np.std(np.log(img_scales))) if len(img_scales) > 1 else None,
-                 scale_sigma_rel=float(1.4826 * np.median(np.abs(np.log(img_scales) - np.median(np.log(img_scales)))) / np.sqrt(max(len(img_scales), 1))))
+    ls = np.log(merged["img_scales"])
+    stats = dict(images_registered=len(names), images_total=len(sfm["images"]),
+                 models=[len(m["images"]) for m in sfm["models"]], chained_links=links, unplaced_model_sizes=unplaced,
+                 n_ratios=merged["n_ratios"],
+                 per_image_scale_spread=float(np.std(ls)) if len(ls) > 1 else None,
+                 scale_sigma_rel=float(1.4826 * np.median(np.abs(ls - np.median(ls))) / np.sqrt(max(len(ls), 1))))
     room_of = [str(Path(n).parent) if str(Path(n).parent) != "." else "" for n in names]
-    cap = MonoCapture(Path(image_root or depth_dir), names, T, Ks, sizes, depth_dir, k, room_of,
+    order = np.argsort(names)
+    cap = MonoCapture(Path(image_root or depth_dir), [names[i] for i in order], T[order], [Ks[i] for i in order],
+                      [sizes[i] for i in order], depth_dir, k[order], [room_of[i] for i in order],
                       np.arange(len(names), dtype=float))
     return cap, stats
 
@@ -218,3 +309,68 @@ def refine_gravity_with_floor(cap, pts):
     cap.poses[:, :3, :3] = R @ cap.poses[:, :3, :3]
     cap.poses[:, :3, 3] = cap.poses[:, :3, 3] @ R.T
     return cap, R, pts @ R.T
+
+
+def exif_intrinsics(path, factor=0.83):
+    """K from EXIF 35 mm-equivalent focal length when present, else the iPhone
+    main-camera prior. 35 mm equivalence is defined on the diagonal."""
+    from PIL import Image
+    im = Image.open(path)
+    w, h = im.size
+    f = factor * max(w, h)
+    try:
+        ex = im.getexif().get_ifd(0x8769)
+        f35 = ex.get(0xA405)
+        if f35:
+            f = float(f35) / 43.27 * np.hypot(w, h)
+    except Exception:
+        pass
+    return np.array([[f, 0, w / 2], [0, f, h / 2], [0, 0, 1.0]]), (w, h)
+
+
+def load_depthgraph(img_dir, depth_dir, features):
+    """Photo tier: poses from the depth-lifted pose graph (depthgraph.py)."""
+    from . import depthgraph as DG
+    img_dir, depth_dir = Path(img_dir), Path(depth_dir)
+    f = np.load(features)
+    names = [str(n) for n in f["names"]]
+    KS = [exif_intrinsics(img_dir / n) for n in names]
+    Ks, sizes = [k for k, _ in KS], [s for _, s in KS]
+    depth_of = lambda i: np.load(depth_dir / Path(names[i]).with_suffix(".npy")).astype(np.float32)
+    edges = DG.pair_edges(names, f, depth_of, Ks, sizes)
+    tree, comps = DG.spanning_tree(len(names), edges)
+    comp = comps[0]
+    G = DG.compose(comp, tree)
+    G = DG.refine(comp, G, edges)
+    T, scale = [], []
+    for k in comp:
+        M = G[k][:3, :3]
+        s = np.cbrt(np.linalg.det(M))
+        P = np.eye(4)
+        P[:3, :3] = M / s
+        P[:3, 3] = G[k][:3, 3]
+        T.append(P)
+        scale.append(s)
+    T, scale = np.array(T), np.array(scale)
+    # Keep the network's metric scale on average: per-image scales are only
+    # relative, so normalise their median to 1.
+    m = np.median(scale)
+    scale /= m
+    T[:, :3, 3] /= m
+    cn = [names[k] for k in comp]
+    up, _ = gravity_from_cameras(T[:, :3, :3])
+    up = _up_from_points(T, cn, [Ks[k] for k in comp], [sizes[k] for k in comp], scale, depth_dir, up)
+    Rg = align_up(up)
+    T[:, :3, :3] = Rg @ T[:, :3, :3]
+    T[:, :3, 3] = T[:, :3, 3] @ Rg.T
+    room_of = [str(Path(n).parent) if str(Path(n).parent) != "." else "" for n in cn]
+    ls = np.log(scale)
+    stats = dict(pose_source="depth graph (sim3 RANSAC on depth-lifted DISK+LightGlue matches)",
+                 images_registered=len(comp), images_total=len(names), pair_edges=len(edges),
+                 components=[len(c) for c in comps], rooms_placed=sorted(set(room_of)),
+                 rooms_unplaced=sorted(set(str(Path(names[k]).parent) for c in comps[1:] for k in c) - set(room_of)),
+                 per_image_scale_spread=float(np.std(ls)),
+                 scale_sigma_rel=float(1.4826 * np.median(np.abs(ls - np.median(ls))) / np.sqrt(max(len(ls), 1))))
+    cap = MonoCapture(img_dir, cn, T, [Ks[k] for k in comp], [sizes[k] for k in comp], depth_dir, scale, room_of,
+                      np.arange(len(comp), dtype=float))
+    return cap, stats

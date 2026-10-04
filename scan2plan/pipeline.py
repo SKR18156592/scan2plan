@@ -35,7 +35,7 @@ def _room_at(rooms, frame, uv):
     return 0
 
 
-def run(capture_dir, out_dir, drift_correction=True, step=3, cache_dir="out/cache"):
+def run(capture_dir, out_dir, drift_correction=True, step=3, cache_dir="out/cache", damage=True):
     """Process one capture. Caches (keyed by capture name and drift mode) make
     re-runs fast; delete the cache dir or pass cache_dir=None for a cold run."""
     t0 = time.time()
@@ -63,7 +63,36 @@ def run(capture_dir, out_dir, drift_correction=True, step=3, cache_dir="out/cach
             cache.parent.mkdir(parents=True, exist_ok=True)
             np.savez_compressed(cache, pts=pts, w=w, poses=P, tag=np.array(tag, dtype=object))
     timing["fuse_s"] = time.time() - t0
+    title = f"{cap.root.name} - LiDAR tier, drift correction {'on' if drift_correction else 'off'}"
+    dmg = None
+    if damage:
+        from dataclasses import replace
+        from . import damage as D
+        from .mono.build import image_up_rotation
+        capP = replace(cap, poses=P)
 
+        def dmg(result):
+            # One keyframe per second; the LiDAR depth frame of the same index
+            # places each detection.
+            fps = len(cap) / max(cap.timestamps[-1] - cap.timestamps[0], 1e-6)
+            idx = list(range(0, len(cap), max(int(round(fps)), 1)))
+            paths = D.frames_from_video(cap.root / "rgb.mp4", idx, Path(out_dir) / "work" / "keyframes")
+            rot = image_up_rotation(P[:, :3, :3], np.array([0.0, 1.0, 0.0]))
+            return D.run(capP, result, paths, rot, Path(out_dir) / "work", errors.LIDAR, min_views=2)
+    return analyze(cap.root.name, "lidar", pts, w, P, tag, timing, t0, out_dir, errors.LIDAR, title=title, damage=dmg)
+
+
+def analyze(name, tier, pts, w, P, drift_tag, timing, t0, out_dir, prof, extra_scale=0.0,
+            room_labels=None, meta=None, title=None, damage=None):
+    """Shared by all tiers: fused cloud + camera poses -> plan JSON + render.
+
+    room_labels(frame, grids, free) may supply the room partition (photo
+    tier: one room per folder); otherwise rooms are segmented from geometry.
+    extra_scale adds a tier-specific relative scale uncertainty (mono depth).
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tag = drift_tag
     t = time.time()
     cam = P[:, :3, 3]
     floor, ceil = detect_floor_ceiling(pts, w, float(np.median(cam[:, 1])))
@@ -73,7 +102,10 @@ def run(capture_dir, out_dir, drift_correction=True, step=3, cache_dir="out/cach
     ok = (cc[:, 0] >= 0) & (cc[:, 0] < cols) & (cc[:, 1] >= 0) & (cc[:, 1] < rows)
     g["walk"][cc[ok, 1], cc[ok, 0]] = True
     free = free_space(g)
-    labels, bridges = segment_rooms(free, g["tall"])
+    if room_labels is not None:
+        labels = room_labels(frame, g, free)
+    else:
+        labels, bridges = segment_rooms(free, g["tall"])
     timing["layout_s"] = time.time() - t
 
     t = time.time()
@@ -86,7 +118,7 @@ def run(capture_dir, out_dir, drift_correction=True, step=3, cache_dir="out/cach
     timing["planes"] = len(planes)
     rooms = []
     for k in range(1, labels.max() + 1):
-        r = measure_room(k, labels == k, frame, pts, floor, ceil, planes, g["floor"])
+        r = measure_room(k, labels == k, frame, pts, floor, ceil, planes, g["floor"], prof, extra_scale)
         rooms.append(r)
     timing["measure_s"] = time.time() - t
 
@@ -114,7 +146,7 @@ def run(capture_dir, out_dir, drift_correction=True, step=3, cache_dir="out/cach
                         other = q
                 oid = f"{wl['id']}_o{j}"
                 ops.append(dict(id=oid, type=op["type"], offset=round(float(offset), 4),
-                                width=_measure(op["width"], errors.OPENING_EDGE_SIGMA),
+                                width=_measure(op["width"], float(np.hypot(prof.opening_edge_sigma * np.sqrt(2), np.hypot(prof.scale_sigma, extra_scale) * op["width"]))),
                                 connects_to=f"r{other}" if other else None))
                 if other:
                     adjacency.setdefault(tuple(sorted((i, other))), []).append(oid)
@@ -127,7 +159,8 @@ def run(capture_dir, out_dir, drift_correction=True, step=3, cache_dir="out/cach
             ceiling = _measure(None, None, status="not_observed",
                                note="no ceiling points in this room; capture did not sweep the ceiling")
         out_rooms.append(dict(id=r["id"], name=f"Room {i}", polygon=[[round(x, 4) for x in p] for p in r["polygon_uv"]],
-                              floor_area=_measure(r["area"], r["area_sigma"]), ceiling_height=ceiling, walls=walls))
+                              floor_area=_measure(r["area"], r["area_sigma"]), ceiling_height=ceiling, walls=walls,
+                              floor_y_world=round(float(r["floor_y"]), 4)))
 
     # Rooms that touch across a bridged doorway or a thin wall are adjacent
     # even when no opening was measured on that wall.
@@ -144,15 +177,18 @@ def run(capture_dir, out_dir, drift_correction=True, step=3, cache_dir="out/cach
     footprint_sigma = float(np.sqrt(sum(r["area_sigma"] ** 2 for r in rooms)))
     result = dict(
         schema_version=SCHEMA_VERSION,
-        capture=Path(capture_dir).name,
-        tier="lidar",
+        capture=name,
+        tier=tier,
+        error_profile=dict(prof.__dict__, extra_scale_sigma=extra_scale),
         units="m",
         interval="95% (value ± 1.96 sigma)",
         plan_frame=dict(rotation_deg=round(float(np.rad2deg(frame.angle)), 3),
                         note="plan (u, v) = world (x, z) rotated so dominant walls are axis-aligned"),
         drift_correction=tag,
         floor=dict(plane_residual_std=round(floor["std"], 4)),
-        quality=dict(wall_surface_spread_median=round(float(np.median([w["surface_spread"] for r in rooms for w in r["walls"] if w["observed"]])), 4)),
+        quality=dict(wall_surface_spread_median=round(float(np.median([w["surface_spread"] for r in rooms for w in r["walls"]
+                                                                        if w["observed"] and w["surface_spread"] is not None] or [np.nan])), 4)),
+        **({"tier_details": meta} if meta else {}),
         rooms=out_rooms,
         adjacency=adj,
         property=dict(room_count=len(rooms), footprint=_measure(footprint, footprint_sigma)),
@@ -161,8 +197,13 @@ def run(capture_dir, out_dir, drift_correction=True, step=3, cache_dir="out/cach
         scope_items=[],
         timing_s={k: round(v, 2) for k, v in timing.items()},
     )
+    if damage is not None:
+        t = time.time()
+        regions, flags, items, info = damage(result)
+        result.update(damage_regions=regions, concealed_damage_flags=flags, scope_items=items, damage_detection=info)
+        result["timing_s"]["damage_s"] = round(time.time() - t, 2)
     result["timing_s"]["total_s"] = round(time.time() - t0, 2)
     with open(out_dir / "plan.json", "w") as f:
         json.dump(result, f, indent=2)
-    render_plan(result, out_dir / "plan.png", title=f"{result['capture']} - LiDAR tier, drift correction {'on' if drift_correction else 'off'}")
+    render_plan(result, out_dir / "plan.png", title=title or f"{name} - {tier} tier")
     return result

@@ -34,16 +34,18 @@ def area_m2(pts, cell=0.1):
 
 
 def detect_floor_ceiling(pts, w, cam_y, min_ceiling_area=2.0):
-    """Floor is the lowest strong peak below the camera; ceiling the highest one above it.
+    """Floor is the strongest horizontal peak below the camera (handheld
+    captures look down, so the floor dominates); ceiling is the highest
+    peak above the camera covering at least `min_ceiling_area`.
 
     `cam_y` is the median camera height; handheld capture keeps the phone
     roughly 1.2-1.6 m above the floor, which bounds where the floor can be.
     """
     peaks, mass = _height_peaks(pts[:, 1], w)
-    below = peaks[peaks < cam_y - 0.6]
-    if len(below) == 0:
+    m = peaks < cam_y - 0.6
+    if not m.any():
         raise RuntimeError("no floor plane found")
-    floor = fit_horizontal(pts, below.min())
+    floor = fit_horizontal(pts, peaks[m][np.argmax(mass[m])])
     ceiling = None
     above = peaks[peaks > cam_y + 0.2]
     for y0 in sorted(above, reverse=True):

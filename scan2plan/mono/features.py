@@ -18,7 +18,7 @@ from PIL import Image, ImageOps
 
 # Video: many frames, consecutive ones overlap heavily -> fewer, cheaper
 # features. Photos: few images with wide baselines -> as many as affordable.
-SETTINGS = {"video": (1024, 1024), "photos": (1600, 4096)}
+SETTINGS = {"video": (1024, 1024), "photos": (1024, 2048)}
 
 
 def load_img(p, dev, max_side):
@@ -52,12 +52,13 @@ def run(images, out, window=None):
     else:
         pairs = [(i, j) for i in range(n) for j in range(i + 1, n)]
     matches = {}
-    for i, j in pairs:
+    print(f"{n} images, {len(pairs)} pairs", flush=True)
+    for pi, (i, j) in enumerate(pairs):
+        if pi % 200 == 0:
+            print(f"  pair {pi}/{len(pairs)}", flush=True)
         a, b = feats[i], feats[j]
         hw0 = torch.tensor(a["size"], device=dev)[None]
         hw1 = torch.tensor(b["size"], device=dev)[None]
-        lafs0 = KF.laf_from_center_scale_ori(a["kp_net"][None], torch.full((1, len(a["kp_net"]), 1, 1), 16.0, device=dev))
-        lafs1 = KF.laf_from_center_scale_ori(b["kp_net"][None], torch.full((1, len(b["kp_net"]), 1, 1), 16.0, device=dev))
         out_ = lg({"image0": {"keypoints": a["kp_net"][None], "descriptors": a["desc"][None], "image_size": hw0.flip(-1)},
                    "image1": {"keypoints": b["kp_net"][None], "descriptors": b["desc"][None], "image_size": hw1.flip(-1)}})
         m = out_["matches"][0].cpu().numpy()

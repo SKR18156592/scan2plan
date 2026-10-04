@@ -1,37 +1,62 @@
-"""Error model for the LiDAR tier. Every reported measurement gets a 1-sigma
-value from here and is published as a 95% interval (value +- 1.96 sigma).
+"""Error model. Every reported measurement gets a 1-sigma value from here and
+is published as a 95% interval (value +- 1.96 sigma).
 
-The constants are priors, not fits: there is no ground truth for the sample
-captures. They are the numbers to recalibrate once tape/laser measurements
-exist (see report: calibration analysis).
+One Profile per input tier. The LiDAR constants are priors from published
+iPhone LiDAR/ARKit evaluations; the photo/video constants are set from the
+measured mono-vs-LiDAR depth error on the sample captures (see
+scripts/eval_mono_depth.py and the calibration section of the report).
+None of them are fitted to tape ground truth yet: there is none for the
+sample data. They are the numbers to recalibrate once it exists.
 """
+from dataclasses import dataclass
+
 import numpy as np
 
-# Per-surface position bias of iPhone LiDAR depth after averaging many frames.
-# Single-frame depth noise is ~1-2 cm; averaging removes noise but not the
-# bias of the depth sensor/ARKit fusion, which public evaluations put at ~1 cm.
-LIDAR_SURFACE_BIAS = 0.010
 
-# Relative scale error of ARKit visual-inertial odometry over a room-sized
-# path. Applies to every length as a fraction of that length.
-SCALE_SIGMA = 0.005
-
-# A wall edge with no supporting points keeps the room-mask boundary, which
-# is only good to about two grid cells plus the wall dilation.
-UNOBSERVED_WALL_SIGMA = 0.10
-
-# Opening edges are found on a 2.5 cm sampling grid along the wall.
-OPENING_EDGE_SIGMA = 0.025 / np.sqrt(3) * np.sqrt(2) + 0.005
+@dataclass(frozen=True)
+class Profile:
+    name: str
+    # Per-surface position bias after averaging all observations of it.
+    surface_bias: float
+    # Relative scale error applied to every length.
+    scale_sigma: float
+    # Edge with no supporting points: keeps the mask boundary.
+    unobserved_wall_sigma: float
+    # Opening edge localisation (one edge).
+    opening_edge_sigma: float
 
 
-def length_sigma(length, s_end_a, s_end_b):
+LIDAR = Profile("lidar", surface_bias=0.010, scale_sigma=0.005, unobserved_wall_sigma=0.10,
+                opening_edge_sigma=0.025 / np.sqrt(3) + 0.005)
+# Video: SfM over hundreds of frames, metric scale from a depth network.
+VIDEO = Profile("video", surface_bias=0.03, scale_sigma=0.03, unobserved_wall_sigma=0.20, opening_edge_sigma=0.05)
+# Photos: 2-8 views per room, few constraints on scale and surfaces.
+PHOTO = Profile("photo", surface_bias=0.05, scale_sigma=0.05, unobserved_wall_sigma=0.30, opening_edge_sigma=0.08)
+PROFILES = {p.name: p for p in (LIDAR, VIDEO, PHOTO)}
+
+
+def wall_surface_sigma(prof, observed, std, n):
+    if not observed:
+        return prof.unobserved_wall_sigma
+    stat = 1.2533 * std / np.sqrt(max(n, 1))
+    return float(np.hypot(stat, prof.surface_bias))
+
+
+def length_sigma(prof, length, s_end_a, s_end_b, extra_scale=0.0):
     """Wall length is the distance between two perpendicular wall surfaces."""
-    return float(np.sqrt(s_end_a ** 2 + s_end_b ** 2 + (SCALE_SIGMA * length) ** 2))
+    sc = np.hypot(prof.scale_sigma, extra_scale)
+    return float(np.sqrt(s_end_a ** 2 + s_end_b ** 2 + (sc * length) ** 2))
 
 
-def ceiling_sigma(height, sd_floor, n_floor, sd_ceil, n_ceil):
+def ceiling_sigma(prof, height, sd_floor, n_floor, sd_ceil, n_ceil, extra_scale=0.0):
     stat2 = (1.2533 * sd_floor) ** 2 / max(n_floor, 1) + (1.2533 * sd_ceil) ** 2 / max(n_ceil, 1)
-    return float(np.sqrt(stat2 + 2 * LIDAR_SURFACE_BIAS ** 2 + (SCALE_SIGMA * height) ** 2))
+    sc = np.hypot(prof.scale_sigma, extra_scale)
+    return float(np.sqrt(stat2 + 2 * prof.surface_bias ** 2 + (sc * height) ** 2))
+
+
+def area_sigma(prof, var_edges, area, extra_scale=0.0):
+    sc = np.hypot(prof.scale_sigma, extra_scale)
+    return float(np.sqrt(var_edges + (sc * 2 * area) ** 2))
 
 
 def interval(value, sigma, z=1.96):

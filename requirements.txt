@@ -4,3 +4,9 @@ opencv-python-headless
 pillow
 matplotlib
 scikit-image
+torch
+torchvision
+transformers
+pycolmap
+kornia
+certifi

@@ -3,3 +3,4 @@ scipy
 opencv-python-headless
 pillow
 matplotlib
+scikit-image

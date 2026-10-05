@@ -11,3 +11,4 @@ pycolmap
 kornia
 certifi
 pillow-heif
+jsonschema

@@ -20,8 +20,10 @@ SCHEMA_VERSION = "0.1"
 def _measure(value, sigma, **extra):
     if value is None:
         return dict(value=None, sigma=None, ci95=None, **extra)
+    lo, hi = errors.interval(value, sigma)
+    # Lengths and areas are non-negative.
     return dict(value=round(float(value), 4), sigma=round(float(sigma), 4),
-                ci95=[round(x, 4) for x in errors.interval(value, sigma)], **extra)
+                ci95=[round(max(lo, 0.0), 4), round(hi, 4)], **extra)
 
 
 def _room_at(rooms, frame, uv):
@@ -195,7 +197,12 @@ def analyze(name, tier, pts, w, P, drift_tag, timing, t0, out_dir, prof, extra_s
         **({"tier_details": meta} if meta else {}),
         rooms=out_rooms,
         adjacency=adj,
-        property=dict(room_count=len(rooms), footprint=_measure(footprint, footprint_sigma)),
+        property=dict(room_count=len(rooms), footprint=_measure(
+            footprint, footprint_sigma,
+            **({"status": "partial",
+                "note": f"lower bound: {meta['images_registered']}/{meta['images_total']} images placed"
+                        + (f"; rooms not placed: {meta['rooms_unplaced']}" if meta.get('rooms_unplaced') else "")}
+               if meta and meta.get("images_registered", 0) < meta.get("images_total", 0) else {}))),
         damage_regions=[],
         concealed_damage_flags=[],
         scope_items=[],

@@ -28,10 +28,15 @@ class Profile:
 
 LIDAR = Profile("lidar", surface_bias=0.010, scale_sigma=0.005, unobserved_wall_sigma=0.10,
                 opening_edge_sigma=0.025 / np.sqrt(3) + 0.005)
-# Video: SfM over hundreds of frames, metric scale from a depth network.
-VIDEO = Profile("video", surface_bias=0.03, scale_sigma=0.03, unobserved_wall_sigma=0.20, opening_edge_sigma=0.05)
-# Photos: 2-8 views per room, few constraints on scale and surfaces.
-PHOTO = Profile("photo", surface_bias=0.05, scale_sigma=0.05, unobserved_wall_sigma=0.30, opening_edge_sigma=0.08)
+# Mono tiers: calibrated on the benchmark, not assumed. Against the LiDAR
+# plan of the same apartment (scripts/compare_tiers.py) the first-pass priors
+# (scale 3-5%, surface 3-5 cm) gave 0% interval coverage and |z| ~ 25-34:
+# matched walls were off by 27-130% (median ~50% video, ~95% photo). The
+# relative sigma below is set from those errors so the 95% interval covers
+# them; it is wide because the mono geometry on the sample is poor, and the
+# report says so rather than shipping confident numbers.
+VIDEO = Profile("video", surface_bias=0.10, scale_sigma=0.45, unobserved_wall_sigma=0.50, opening_edge_sigma=0.10)
+PHOTO = Profile("photo", surface_bias=0.15, scale_sigma=0.50, unobserved_wall_sigma=0.60, opening_edge_sigma=0.15)
 PROFILES = {p.name: p for p in (LIDAR, VIDEO, PHOTO)}
 
 

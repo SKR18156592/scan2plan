@@ -294,5 +294,6 @@ itself (cells bounded by wall planes) rather than from free-space masks.
 | Mono tiers | `scan2plan run video <capture>/rgb.mp4`, `scan2plan run photos <photo set>` |
 | Mono vs LiDAR | `python scripts/compare_tiers.py <tier plan> <lidar plan> <out.json>` |
 
-AI tools: Claude Code was used throughout for implementation; every design
-decision above is mine to defend.
+AI tools: built with Claude Code as a pair-programmer. I directed the
+approach, reviewed the results at each step, and can defend each design
+decision and its trade-offs.

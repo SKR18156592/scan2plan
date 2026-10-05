@@ -43,7 +43,9 @@ def run(cap, plan, image_paths, rot, work, prof, min_views):
         if r.returncode != 0:
             return [], [], [], dict(status="detector_failed", log=str(work / "damage.log"))
     det = json.load(open(dj))
-    regions = locate(det["detections"], cap, plan, min_views=min_views)
+    from .detect import CLASS_THRESHOLDS
+    kept = [d for d in det["detections"] if d["score"] >= CLASS_THRESHOLDS[d["cls"]]]
+    regions = locate(kept, cap, plan, min_views=min_views)
     for k, r in enumerate(regions):
         r["id"] = f"d{k + 1}"
         a, b = r["extent"]
@@ -55,6 +57,6 @@ def run(cap, plan, image_paths, rot, work, prof, min_views):
                              round(r["area"]["value"] + 1.96 * r["area"]["sigma"], 4)]
     flags = concealed_flags(regions)
     items = scope_items(regions, plan)
-    info = dict(status="ok", model=det["model"], threshold=det["threshold"], frames_scanned=len(image_paths),
-                raw_detections=len(det["detections"]), min_views=min_views)
+    info = dict(status="ok", model=det["model"], class_thresholds=CLASS_THRESHOLDS, frames_scanned=len(image_paths),
+                raw_detections=len(det["detections"]), above_threshold=len(kept), min_views=min_views)
     return regions, flags, items, info

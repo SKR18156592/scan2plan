@@ -27,7 +27,15 @@ CLASSES = {
     "hole": ["a hole in drywall", "a hole in a wall"],
     "peeling_paint": ["peeling paint on a wall", "blistering paint"],
 }
-THRESHOLD = 0.30
+THRESHOLD = 0.30  # detector output threshold (cached); per-class filter below
+
+# Per-class acceptance thresholds, set on the sample captures (which contain
+# no visible damage): the 0.30 threshold produced 11 multi-view regions there,
+# all false - marble veining as "water_stain" (0.33-0.43) and straight
+# ceiling/wall junctions near downlights as "crack" (0.32-0.52). These values
+# reject all of them. They are negatives-only calibration: the true-positive
+# rate on real damage is unmeasured (no staged-damage capture exists).
+CLASS_THRESHOLDS = {"water_stain": 0.45, "mold": 0.35, "crack": 0.55, "hole": 0.35, "peeling_paint": 0.35}
 MODEL = "google/owlv2-base-patch16-ensemble"
 
 

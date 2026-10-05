@@ -125,7 +125,21 @@ constraints fixed that. Step 3 was added after the repeatability analysis
 found ~5° of heading drift across `single_scan_floor_only`, which has only 2
 usable loop closures.
 
-{{ABLATION_TABLE}}
+Ablation (`out/bench/ablation_*.json`; "off" = raw ARKit poses):
+
+| | floor_only off | floor_only on | with_ceiling off | with_ceiling on |
+|---|---|---|---|---|
+| loop closures used | – | 2 | – | 41 |
+| loop residual, mean | 1.8 cm | 1.2 cm | 10.6 cm | 2.5 cm |
+| heading spread across fragments | 1.80° | 0.85° | 0.79° | 0.57° |
+| wall thickness (12 strongest planes) | 3.97 cm | 3.56 cm | 4.53 cm | 4.37 cm |
+| floor residual | 1.92 cm | 1.93 cm | 1.97 cm | 1.97 cm |
+| stitched footprint | 59.6 m² (7 rooms) | 52.6 m² (6) | 55.1 m² (6) | 58.2 m² (8) |
+
+Correction is on by default. Every consistency metric improves or holds. The
+footprint changes in both directions because drift changes which wall gaps
+close, and therefore how the apartment is partitioned — the effect is real
+and is the same failure §7 runs into.
 
 ## 5. Error budget and calibration
 
@@ -148,12 +162,65 @@ as the main open calibration issue.
 **Mono tiers are fitted.** With first-pass priors (3–5 cm, 3–5%), interval
 coverage against the LiDAR reference was **0%** (|z| ≈ 25–34) — confident
 garbage. The relative sigma was then set from the measured errors (video
-45%, photo 50%), giving coverage {{MONO_COVERAGE}}. Footprints from mono tiers
+45%, photo 50%), giving coverage video 83%, photo 33% (from 0% for both). Footprints from mono tiers
 are flagged as lower bounds when images were not placed.
 
 ## 6. Benchmark
 
-{{BENCH_TABLES}}
+**LiDAR tier** (`out/bench/`, M1 8 GB, cold run includes drift correction
+and damage detection):
+
+| capture | rooms | stitched footprint (95%) | openings | walls observed | median wall ±(95%) | time |
+|---|---|---|---|---|---|---|
+| single_room | 3 | 19.23 m² (18.78–19.67) | 5 | 18/22 | ±3.6 cm | 75 s |
+| single_scan_floor_only | 6 | 52.60 m² (51.83–53.37) | 8 | 50/58 | ±3.3 cm | 203 s |
+| single_scan_with_ceiling | 8 | 58.20 m² (57.59–58.81) | 8 | 54/56 | ±3.2 cm | 402 s |
+
+Ceiling height (with_ceiling; floor_only and single_room never point the
+phone up, so their ceilings are reported `not_observed`): 2.985, 3.060,
+3.075, 3.073, 3.059 m, each ±4.1 cm (95%). Rooms r2/r3/r4/r7 agree within
+1.6 cm; r1 is 7–9 cm lower (likely a bulkhead or a mis-assigned ceiling patch,
+unverified without tape).
+
+**Gates** (sample has no tape ground truth, so absolute gates are unscored):
+
+| gate | result | status |
+|---|---|---|
+| Opening widths ≤ 2 cm on ≥ 85% | 21 openings detected; no reference | unscored |
+| Ceiling ≤ 1.5 cm; repeat spread ≤ 1 cm | one capture with ceiling; no repeat | unscored |
+| Repeatability ≤ 1 cm / 0.5% per wall | 0/12 pass, median 12.9 cm | **fail** (§7) |
+| Drift accountability + ablation | §4 table | pass |
+| Photo whole-property stitch, ±8% | see below | **fail** |
+| Photo walls ±8% / video ±3% | see below | **fail** |
+
+**Repeatability** (`out/bench/repeatability.json`, floor_only vs
+with_ceiling, walls observed in both and ≥ 0.5 m): 5 rooms matched, 12
+walls, 0 within 1 cm/0.5%, median 12.9 cm, p90 29.0 cm. Stitched footprints
+differ by 10% (52.6 vs 58.2 m²), because the two captures partition the
+apartment differently.
+
+**Mono tiers against the LiDAR plan** (`scripts/compare_tiers.py`):
+
+| | video (229 keyframes) | photos (40 in 5 folders) |
+|---|---|---|
+| images placed | 100 / 229 | 27 / 40, all 5 folders |
+| rooms in plan | 5 | 2 (after dropping < 1 m² fragments) |
+| footprint vs LiDAR | 19.0 vs 52.6 m² (−64%, flagged partial) | 9.9 vs 52.6 m² (−81%, partial) |
+| matched-wall error, median | 51% | 86% |
+| 95% interval coverage | 83% | 33% |
+| time (8 GB M1, swapping) | ~30 min | ~40 min |
+
+Both mono tiers run end to end and are honest about it, but neither meets its
+gate on this footage.
+
+**Damage** on the sample (no visible damage): OWLv2 raised 5 / 17 / 60 raw
+detections; at 0.30 threshold and 2-view merging, 11 regions survived — all
+false (marble veining as water stain, ceiling junctions as cracks). With the
+per-class thresholds and 3-view LiDAR rule now shipped: 0 regions, 0 flags,
+0 scope items on all three captures. True-positive rate: unmeasured.
+
+**Head-to-head (Part 3): not done.** It needs a consumer-app scan of the same
+rooms; none exists for the sample and the rooms cannot be recaptured.
 
 ## 7. The fix loop
 
@@ -165,7 +232,15 @@ the free-space mask, whose extent depends on what each capture saw; the wall
 *surfaces* agree. Fix: detect wall planes globally and snap room outlines to
 them. Prediction: median ≤ 3 cm, pass rate 30–50%.
 
-{{FIXLOOP_TABLE}}
+| (harness v2: rotation locked to k·90°) | before (`fixloop-before`) | after (`main`) |
+|---|---|---|
+| walls passing | 0 / 9 | 0 / 12 |
+| median difference | 16.0 cm | 12.9 cm |
+| p90 difference | 97.3 cm | 29.0 cm |
+| rooms matched | 4 | 5 |
+| gate | fail | fail |
+
+Regenerate: `out/before` and `out/bench` via §9.
 
 **Post-mortem.** The prediction was badly wrong. The shipped fix moved the
 number, but evaluating it exposed two things the declaration missed:

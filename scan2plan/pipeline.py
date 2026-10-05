@@ -80,7 +80,7 @@ def run(capture_dir, out_dir, drift_correction=True, step=3, cache_dir="out/cach
             idx = list(range(0, len(cap), max(int(round(fps)), 1)))
             paths = D.frames_from_video(cap.root / "rgb.mp4", idx, Path(out_dir) / "work" / "keyframes")
             rot = image_up_rotation(P[:, :3, :3], np.array([0.0, 1.0, 0.0]))
-            return D.run(capP, result, paths, rot, Path(out_dir) / "work", errors.LIDAR, min_views=2)
+            return D.run(capP, result, paths, rot, Path(out_dir) / "work", errors.LIDAR, min_views=3)
     return analyze(cap.root.name, "lidar", pts, w, P, tag, timing, t0, out_dir, errors.LIDAR, title=title, damage=dmg)
 
 

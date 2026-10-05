@@ -39,7 +39,7 @@ def wall_thickness(pts, w, floor_y, top, n_planes=12):
     return float(np.mean(spreads)), spreads
 
 
-def main(name):
+def main(name, out="out/bench"):
     rows = {}
     for mode in ("drift_off", "drift_on"):
         d = np.load(f"out/cache/{name}_{mode}_s3.npz", allow_pickle=True)
@@ -47,17 +47,19 @@ def main(name):
         f, c = detect_floor_ceiling(pts, w, float(np.median(P[:, 1, 3])))
         top = (c["c"] - f["c"] - 0.15) if c else 2.4
         thick, _ = wall_thickness(pts, w, f["c"], top)
-        plan = json.load(open(f"out/ablation/{name}_{mode}/plan.json"))
+        plan = json.load(open(f"{out}/{name}{'' if mode == 'drift_on' else '_drift_off'}/plan.json"))
         rows[mode] = dict(wall_thickness_cm=round(100 * thick, 2), floor_residual_cm=round(100 * f["std"], 2),
                           footprint_m2=plan["property"]["footprint"]["value"], rooms=plan["property"]["room_count"],
                           loop_residual_mean_cm=round(100 * tag["loop_residual_after_m"]["mean"], 1) if tag.get("enabled") else None)
-    on = json.load(open(f"out/ablation/{name}_drift_on/plan.json"))["drift_correction"]
+    on = json.load(open(f"{out}/{name}/plan.json"))["drift_correction"]
     rows["drift_off"]["loop_residual_mean_cm"] = round(100 * on["loop_residual_before_m"]["mean"], 1)
-    rows["correction"] = {k: on[k] for k in ("fragments", "loop_edges", "max_correction_m", "max_yaw_correction_deg")}
+    rows["correction"] = {k: on[k] for k in ("method", "fragments", "loop_edges", "max_correction_m",
+                                             "max_yaw_correction_deg", "heading_spread_deg")}
     print(name, json.dumps(rows, indent=1))
-    json.dump(rows, open(f"out/ablation/{name}_ablation.json", "w"), indent=1)
+    json.dump(rows, open(f"{out}/ablation_{name}.json", "w"), indent=1)
 
 
 if __name__ == "__main__":
-    for n in sys.argv[1:]:
-        main(n)
+    # python scripts/ablation.py <out_dir> <capture_name>...
+    for n in sys.argv[2:]:
+        main(n, sys.argv[1])

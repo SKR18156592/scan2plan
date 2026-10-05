@@ -1,5 +1,0 @@
-Metadata-Version: 2.4
-Name: scan2plan
-Version: 0.1.0
-Summary: Phone capture (LiDAR, video or photos) to dimensioned, stitched floor plan with damage and scope
-Requires-Python: >=3.10

@@ -20,7 +20,7 @@ Needs Python 3.10–3.12 and ~3 GB of disk for wheels and weights. No GPU needed
 Apple-silicon MPS is used when present.
 
 ```bash
-git clone <this repo> && cd scan2plan
+git clone https://github.com/SKR18156592/scan2plan && cd scan2plan
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt && pip install -e .     # ~4 min
 scripts/fetch_weights.sh                                 # ~3 min, ~1.5 GB, then works offline

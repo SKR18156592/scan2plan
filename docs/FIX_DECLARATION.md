@@ -56,3 +56,23 @@ distance, which does not depend on how much floor the capture saw.
   LiDAR surface bias (~1 cm per surface, two surfaces per length), so
   full pass is not expected from this fix alone.
 - rooms matched: 4 -> >= 5
+
+
+---
+
+## Result (added after shipping; the declaration above is unchanged)
+
+| (harness v2, rotation locked to k·90°) | before | after |
+|---|---|---|
+| walls passing | 0 / 9 | 0 / 12 |
+| median difference | 16.0 cm | 12.9 cm |
+| p90 difference | 97.3 cm | 29.0 cm |
+| rooms matched | 4 | 5 |
+
+The prediction (median <= 3 cm, 30-50% passing) was **badly wrong**. The
+gate did not move from fail. Post-mortem in `docs/REPORT.md` §7: the harness
+let rotation float (fixed: before-number restated 17.5 -> 16.0 cm under the
+corrected harness), a second root cause (~5 deg heading drift) was found and
+fixed by a Manhattan heading prior, and the declared root cause (outline
+from free-space masks) is only partly addressed by plane snapping because
+the two captures still partition the apartment differently.

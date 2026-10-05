@@ -46,5 +46,6 @@ Route 2: stock apps only. Follow each step exactly. Pick ONE tier.
 - Starting or ending a recording facing a blank wall.
 
 ## Time and what you get
-LiDAR: ~1 min/room capture, ~1–3 min processing. Video: ~1.5 min/room, ~10–20 min processing.
-Photos: ~1 min/room, ~3–10 min processing. Output: `plan.json` + `plan.png` in `out/<name>/`.
+LiDAR: ~1 min/room capture, ~1–7 min processing. Video: ~1.5 min/room, ~30 min processing for
+a 2 min clip. Photos: ~1 min/room, ~40 min for 40 photos (8 GB laptop; faster with 16 GB).
+Output: `plan.json` + `plan.png` in `out/<name>_<tier>/` (e.g. `out/kitchen_photos/`).
